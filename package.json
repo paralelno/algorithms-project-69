@@ -1,0 +1,15 @@
+{
+  "name": "@hexlet/code",
+  "version": "0.0.1",
+  "description": "Search engine with an inverted index, relevance ranking and TF-IDF.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "author": "Hexlet",
+  "license": "MIT"
+}
