@@ -4,9 +4,14 @@
  * Обработка текста (шаг 1): текст режется на токены по пробелам и переводам
  * строк, из каждого токена оставляем только «словесные» символы (\w),
  * склеиваем их в один терм, приводим к нижнему регистру. Если от токена
- * ничего не осталось — выбрасываем.
+ * ничего не осталось — выбрасываем. Правило одно на весь проект и применяется
+ * и к документам, и к запросам.
  *
- * Правило одно на весь проект и применяется и к документам, и к запросам.
+ * Релевантность (шаг 2): вес документа = число вхождений искомого терма в
+ * его текст. Документы сортируются по весу по убыванию, документы без терма
+ * не попадают в результат. Метрика вынесена в отдельную функцию relevance,
+ * чтобы в следующих шагах (нечёткий поиск, TF-IDF) её можно было заменить
+ * правкой одной функции, а не всей сортировки.
  */
 
 const WORD_CHARS = /\w+/g;
@@ -39,11 +44,14 @@ const tokenize = (text) => {
 };
 
 /**
+ * Релевантность документа по одному терму: число вхождений терма в текст.
+ * Это метрика шага 2; в шаге «TF-IDF» будет заменена другой формулой.
+ */
+const relevance = (doc, term) =>
+  tokenize(doc.text).reduce((count, t) => (t === term ? count + 1 : count), 0);
+
+/**
  * Поисковый движок.
- *
- * Шаг 1: поиск по одному терму, независимый от знаков препинания и регистра.
- * Результаты ранжируются по частоте вхождения терма в документе
- * (документ, в котором терма больше, идёт раньше).
  *
  * @param {Array<{id: string, text: string}>} docs
  * @param {string} query
@@ -55,21 +63,12 @@ const search = (docs, query) => {
 
   const wanted = terms[0];
 
-  const found = [];
-  for (const doc of docs) {
-    const docTerms = tokenize(doc.text);
-    const frequency = docTerms.reduce(
-      (count, term) => (term === wanted ? count + 1 : count),
-      0,
-    );
-    if (frequency > 0) {
-      found.push({ id: doc.id, frequency });
-    }
-  }
-
-  found.sort((a, b) => b.frequency - a.frequency);
-  return found.map((d) => d.id);
+  return docs
+    .map((doc) => ({ id: doc.id, weight: relevance(doc, wanted) }))
+    .filter((doc) => doc.weight > 0)
+    .sort((a, b) => b.weight - a.weight)
+    .map((doc) => doc.id);
 };
 
-export { normalizeToken, tokenize, search };
+export { normalizeToken, tokenize, relevance, search };
 export default search;
