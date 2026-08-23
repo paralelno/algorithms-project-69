@@ -7,19 +7,21 @@
  * ничего не осталось — выбрасываем. Правило одно на весь проект и применяется
  * и к документам, и к запросам.
  *
- * Релевантность (шаг 2): вес документа = число вхождений искомого терма.
- * Нечёткий поиск (шаг 3): запрос — строка из любого числа слов; документ
- * попадает в результат, если в нём есть хотя бы один терм запроса; сортировка
- * в два ключа — количество РАЗНЫХ термов запроса, затем сумма вхождений.
+ * Обратный индекс (шаг 4): индекс строится один раз — «слово -> документы».
+ * Ключ — нормализованный терм, значение — список пар {id, count}: в каких
+ * документах встречается терм и сколько раз (count — для релевантности).
  *
- * Обратный индекс (шаг 4): индекс строится один раз по всем документам —
- * «слово -> документы» (раньше было «документы -> слова»). Ключ — нормализованный
- * терм, значение — список пар {id, count}: в каких документах встречается терм
- * и сколько раз (count нужен для релевантности, тогда текст документа не
- * обходим второй раз). Поиск идёт по индексу, сигнатура search(docs, query)
- * и результаты не меняются.
+ * TF-IDF (шаг 5): метрика ранжирования, заменяющая подсчёт вхождений шагов 2–3.
+ * Учитывает длину документа (tf) и редкость слова (idf):
+ *   tf(терм, док)  = вхошений терма в документе / всего термов в документе
+ *   df(терм)       = в скольких документах встречается терм
+ *   idf(терм)      = log2(1 + (N - df(терм) + 1) / (df(терм) + 0.5))
+ *   вес(документ)  = сумма tf * idf по термам запроса, которые есть в документе
+ * Документы сортируются по весу по убыванию; документ, в котором нет ни одного
+ * терма запроса, в результат не попадает. Формула idf берётся именно в этом
+ * виде (всегда положительная, иначе документ с «мусорным» словом выпал бы).
  *
- * Метрика relevance — единственная, которую заменит шаг «TF-IDF».
+ * Сигнатура search(docs, query) и формат результата (массив id) не меняются.
  */
 
 const WORD_CHARS = /\w+/g;
@@ -52,9 +54,7 @@ const tokenize = (text) => {
 };
 
 /**
- * Обратный индекс: { терм: [{id, count}, ...] }.
- * Строится один раз по всем документам. Порядок документов внутри ключа
- * не важен (ранжирование происходит на выдаче).
+ * Обратный индекс: { терм: [{id, count}, ...] }. Строится один раз.
  */
 const buildIndex = (docs) => {
   const index = {};
@@ -72,57 +72,58 @@ const buildIndex = (docs) => {
 };
 
 /**
- * Релевантность документа к набору термов запроса:
- *   matched — сколько РАЗНЫХ термов запроса нашлось в документе,
- *   total   — сумма их вхождений в документе.
- *
- * Метрика шага 2 (одно слово) и шага 3 (несколько слов); в шаге «TF-IDF»
- * заменится другой формулой.
+ * Частота терма в документе: вхошений / всего термов в документе.
  */
-const relevance = (doc, queryTerms) => {
-  const wanted = new Set(queryTerms);
-  const seen = new Set();
-  let total = 0;
-  for (const term of tokenize(doc.text)) {
-    if (wanted.has(term)) {
-      total += 1;
-      seen.add(term);
-    }
-  }
-  return { matched: seen.size, total };
+const tf = (term, doc) => {
+  const docTerms = tokenize(doc.text);
+  if (docTerms.length === 0) return 0;
+  const count = docTerms.reduce((n, t) => (t === term ? n + 1 : n), 0);
+  return count / docTerms.length;
 };
 
 /**
- * Поисковый движок (по обратному индексу).
+ * Обратно-документальная частота. Формула зафиксирована заданием:
+ * idf(терм) = log2(1 + (N - df(терм) + 1) / (df(терм) + 0.5)).
+ * Всегда положительна, в отличие от классического log(N / df).
+ */
+const idf = (term, index, totalDocs) => {
+  const df = index[term] ? index[term].length : 0;
+  return Math.log2(1 + (totalDocs - df + 1) / (df + 0.5));
+};
+
+/**
+ * Вес документа по TF-IDF: сумма tf * idf по термам запроса, которые есть
+ * в документе. Это метрика ранжирования (шаг 5).
+ */
+const relevance = (doc, queryTerms, index, totalDocs) => {
+  let weight = 0;
+  for (const term of queryTerms) {
+    const t = tf(term, doc);
+    if (t > 0) weight += t * idf(term, index, totalDocs);
+  }
+  return weight;
+};
+
+/**
+ * Поисковый движок (по обратному индексу, ранжирование TF-IDF).
  *
  * @param {Array<{id: string, text: string}>} docs
  * @param {string} query — одно или несколько слов
- * @returns {string[]} id найденных документов, отсортированных по релевантности
+ * @returns {string[]} id найденных документов, отсортированных по весу TF-IDF
  */
 const search = (docs, query) => {
   const queryTerms = [...new Set(tokenize(query))];
   if (queryTerms.length === 0) return [];
 
+  const totalDocs = docs.length;
   const index = buildIndex(docs);
 
-  // Агрегируем по индексу: сколько разных термов запроса и сумма вхождений
-  const scores = {};
-  for (const term of queryTerms) {
-    const entries = index[term];
-    if (!entries) continue; // терм ни в одном документе — игнорируем
-    for (const { id, count } of entries) {
-      if (!scores[id]) scores[id] = { matched: 0, total: 0 };
-      scores[id].matched += 1;
-      scores[id].total += count;
-    }
-  }
-
-  return Object.entries(scores)
-    .map(([id, score]) => ({ id, ...score }))
-    .filter((doc) => doc.matched > 0)
-    .sort((a, b) => (b.matched - a.matched) || (b.total - a.total))
+  return docs
+    .map((doc) => ({ id: doc.id, weight: relevance(doc, queryTerms, index, totalDocs) }))
+    .filter((doc) => doc.weight > 0)
+    .sort((a, b) => b.weight - a.weight)
     .map((doc) => doc.id);
 };
 
-export { normalizeToken, tokenize, buildIndex, relevance, search };
+export { normalizeToken, tokenize, buildIndex, tf, idf, relevance, search };
 export default search;
