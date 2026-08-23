@@ -7,11 +7,17 @@
  * ничего не осталось — выбрасываем. Правило одно на весь проект и применяется
  * и к документам, и к запросам.
  *
- * Релевантность (шаг 2): вес документа = число вхождений искомого терма в
- * его текст. Документы сортируются по весу по убыванию, документы без терма
- * не попадают в результат. Метрика вынесена в отдельную функцию relevance,
- * чтобы в следующих шагах (нечёткий поиск, TF-IDF) её можно было заменить
- * правкой одной функции, а не всей сортировки.
+ * Релевантность (шаг 2): вес документа = число вхождений искомого терма.
+ * Документы сортируются по весу по убыванию, документы без терма — в результат
+ * не попадают.
+ *
+ * Нечёткий поиск (шаг 3): запрос — строка из любого числа слов. Документ
+ * попадает в результат, если в нём есть хотя бы один терм запроса (совпадение
+ * всех слов не требуется). Термы запроса, которых нет ни в одном документе,
+ * игнорируются. Сортировка в два ключа: сначала по количеству РАЗНЫХ термов
+ * запроса, найденных в документе, затем по сумме их вхождений.
+ *
+ * Метрика relevance — единственная, которую заменяет шаг «TF-IDF».
  */
 
 const WORD_CHARS = /\w+/g;
@@ -44,29 +50,44 @@ const tokenize = (text) => {
 };
 
 /**
- * Релевантность документа по одному терму: число вхождений терма в текст.
- * Это метрика шага 2; в шаге «TF-IDF» будет заменена другой формулой.
+ * Релевантность документа к набору термов запроса:
+ *   matched — сколько РАЗНЫХ термов запроса нашлось в документе,
+ *   total   — сумма их вхождений в документе.
+ *
+ * Метрика шага 2 (одно слово) и шага 3 (несколько слов); в шаге «TF-IDF»
+ * заменится другой формулой.
  */
-const relevance = (doc, term) =>
-  tokenize(doc.text).reduce((count, t) => (t === term ? count + 1 : count), 0);
+const relevance = (doc, queryTerms) => {
+  const wanted = new Set(queryTerms);
+  const seen = new Set();
+  let total = 0;
+  for (const term of tokenize(doc.text)) {
+    if (wanted.has(term)) {
+      total += 1;
+      seen.add(term);
+    }
+  }
+  return { matched: seen.size, total };
+};
 
 /**
  * Поисковый движок.
  *
  * @param {Array<{id: string, text: string}>} docs
- * @param {string} query
+ * @param {string} query — одно или несколько слов
  * @returns {string[]} id найденных документов, отсортированных по релевантности
  */
 const search = (docs, query) => {
-  const terms = tokenize(query);
-  if (terms.length === 0) return [];
-
-  const wanted = terms[0];
+  const queryTerms = tokenize(query);
+  if (queryTerms.length === 0) return [];
 
   return docs
-    .map((doc) => ({ id: doc.id, weight: relevance(doc, wanted) }))
-    .filter((doc) => doc.weight > 0)
-    .sort((a, b) => b.weight - a.weight)
+    .map((doc) => {
+      const { matched, total } = relevance(doc, queryTerms);
+      return { id: doc.id, matched, total };
+    })
+    .filter((doc) => doc.matched > 0)
+    .sort((a, b) => (b.matched - a.matched) || (b.total - a.total))
     .map((doc) => doc.id);
 };
 
