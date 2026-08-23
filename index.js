@@ -8,16 +8,18 @@
  * и к документам, и к запросам.
  *
  * Релевантность (шаг 2): вес документа = число вхождений искомого терма.
- * Документы сортируются по весу по убыванию, документы без терма — в результат
- * не попадают.
+ * Нечёткий поиск (шаг 3): запрос — строка из любого числа слов; документ
+ * попадает в результат, если в нём есть хотя бы один терм запроса; сортировка
+ * в два ключа — количество РАЗНЫХ термов запроса, затем сумма вхождений.
  *
- * Нечёткий поиск (шаг 3): запрос — строка из любого числа слов. Документ
- * попадает в результат, если в нём есть хотя бы один терм запроса (совпадение
- * всех слов не требуется). Термы запроса, которых нет ни в одном документе,
- * игнорируются. Сортировка в два ключа: сначала по количеству РАЗНЫХ термов
- * запроса, найденных в документе, затем по сумме их вхождений.
+ * Обратный индекс (шаг 4): индекс строится один раз по всем документам —
+ * «слово -> документы» (раньше было «документы -> слова»). Ключ — нормализованный
+ * терм, значение — список пар {id, count}: в каких документах встречается терм
+ * и сколько раз (count нужен для релевантности, тогда текст документа не
+ * обходим второй раз). Поиск идёт по индексу, сигнатура search(docs, query)
+ * и результаты не меняются.
  *
- * Метрика relevance — единственная, которую заменяет шаг «TF-IDF».
+ * Метрика relevance — единственная, которую заменит шаг «TF-IDF».
  */
 
 const WORD_CHARS = /\w+/g;
@@ -50,6 +52,26 @@ const tokenize = (text) => {
 };
 
 /**
+ * Обратный индекс: { терм: [{id, count}, ...] }.
+ * Строится один раз по всем документам. Порядок документов внутри ключа
+ * не важен (ранжирование происходит на выдаче).
+ */
+const buildIndex = (docs) => {
+  const index = {};
+  for (const doc of docs) {
+    const counts = {};
+    for (const term of tokenize(doc.text)) {
+      counts[term] = (counts[term] || 0) + 1;
+    }
+    for (const [term, count] of Object.entries(counts)) {
+      if (!index[term]) index[term] = [];
+      index[term].push({ id: doc.id, count });
+    }
+  }
+  return index;
+};
+
+/**
  * Релевантность документа к набору термов запроса:
  *   matched — сколько РАЗНЫХ термов запроса нашлось в документе,
  *   total   — сумма их вхождений в документе.
@@ -71,25 +93,36 @@ const relevance = (doc, queryTerms) => {
 };
 
 /**
- * Поисковый движок.
+ * Поисковый движок (по обратному индексу).
  *
  * @param {Array<{id: string, text: string}>} docs
  * @param {string} query — одно или несколько слов
  * @returns {string[]} id найденных документов, отсортированных по релевантности
  */
 const search = (docs, query) => {
-  const queryTerms = tokenize(query);
+  const queryTerms = [...new Set(tokenize(query))];
   if (queryTerms.length === 0) return [];
 
-  return docs
-    .map((doc) => {
-      const { matched, total } = relevance(doc, queryTerms);
-      return { id: doc.id, matched, total };
-    })
+  const index = buildIndex(docs);
+
+  // Агрегируем по индексу: сколько разных термов запроса и сумма вхождений
+  const scores = {};
+  for (const term of queryTerms) {
+    const entries = index[term];
+    if (!entries) continue; // терм ни в одном документе — игнорируем
+    for (const { id, count } of entries) {
+      if (!scores[id]) scores[id] = { matched: 0, total: 0 };
+      scores[id].matched += 1;
+      scores[id].total += count;
+    }
+  }
+
+  return Object.entries(scores)
+    .map(([id, score]) => ({ id, ...score }))
     .filter((doc) => doc.matched > 0)
     .sort((a, b) => (b.matched - a.matched) || (b.total - a.total))
     .map((doc) => doc.id);
 };
 
-export { normalizeToken, tokenize, relevance, search };
+export { normalizeToken, tokenize, buildIndex, relevance, search };
 export default search;

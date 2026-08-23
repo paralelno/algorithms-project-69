@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import search, { normalizeToken, tokenize, relevance } from '../index.js';
+import search, { normalizeToken, tokenize, buildIndex, relevance } from '../index.js';
 
 const doc1 = { id: 'doc1', text: "I can't shoot straight unless I've had a pint!" };
 const doc2 = { id: 'doc2', text: "Don't shoot shoot shoot that thing at me." };
@@ -93,4 +93,35 @@ test('нечёткий: сначала количество разных тер�
 
 test('нечёткий: запрос со знаками препинания', () => {
   assert.deepEqual(search(docs, "Shoot! at, me"), ['doc2', 'doc1']);
+});
+
+// ── Шаг 4: обратный индекс ──────────────────────────────────────────────
+test('обратный индекс: терм -> список {id, count}', () => {
+  const d1 = { id: 'doc1', text: 'some text' };
+  const d2 = { id: 'doc2', text: 'some text text too' };
+  const index = buildIndex([d1, d2]);
+  assert.deepEqual(index, {
+    some: [{ id: 'doc1', count: 1 }, { id: 'doc2', count: 1 }],
+    text: [{ id: 'doc1', count: 1 }, { id: 'doc2', count: 2 }],
+    too: [{ id: 'doc2', count: 1 }],
+  });
+});
+
+test('обратный индекс: ключ — нормализованный терм', () => {
+  const index = buildIndex([{ id: 'x', text: 'PINT! pint' }]);
+  assert.ok(index.pint);
+  assert.equal(index.pint.length, 1);
+  assert.equal(index.pint[0].count, 2);
+  assert.equal(index['pint!'], undefined);
+});
+
+test('обратный индекс: результаты поиска не изменились', () => {
+  assert.deepEqual(search(docs, 'shoot'), ['doc2', 'doc1']);
+  assert.deepEqual(search(docs, 'shoot at me'), ['doc2', 'doc1']);
+  assert.deepEqual(search(docs, 'shoot at me, nerd'), ['doc2', 'doc1']);
+});
+
+test('обратный индекс: терм без совпадений игнорируется', () => {
+  const index = buildIndex(docs);
+  assert.equal(index.nerd, undefined);
 });
